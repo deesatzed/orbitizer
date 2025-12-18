@@ -1,0 +1,21 @@
+# Rust build artifacts
+/target/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Orbit local data
+.orbit/
+
+# Claude Code local config
+.claude/
+
+# Environment
+.env
+.env.local
