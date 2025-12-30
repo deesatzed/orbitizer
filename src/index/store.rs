@@ -1,8 +1,9 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
+use std::env;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::model::project::ProjectEntry;
 
@@ -25,28 +26,56 @@ impl Default for OrbitIndex {
     }
 }
 
+fn home_index_path() -> Option<PathBuf> {
+    env::var("HOME").ok().map(|h| PathBuf::from(h).join(".orbit").join("index.json"))
+}
+
 pub fn index_path(root: &Path) -> std::path::PathBuf {
+    // Legacy per-root index path (kept for compatibility/tests)
     root.join(".orbit").join("index.json")
 }
 
 pub fn load(root: &Path) -> Result<OrbitIndex> {
-    let p = index_path(root);
-    if !p.exists() {
-        return Ok(OrbitIndex::default());
+    // Prefer shared home-level index, fallback to legacy root/.orbit/index.json
+    let candidates: Vec<PathBuf> = home_index_path()
+        .into_iter()
+        .chain(std::iter::once(index_path(root)))
+        .collect();
+
+    for p in candidates {
+        if !p.exists() {
+            continue;
+        }
+        let content =
+            fs::read_to_string(&p).with_context(|| format!("Failed to read {}", p.display()))?;
+        if let Ok(parsed) =
+            serde_json::from_str::<OrbitIndex>(&content).with_context(|| format!("Failed to parse {}", p.display()))
+        {
+            return Ok(parsed);
+        }
     }
-    let content =
-        fs::read_to_string(&p).with_context(|| format!("Failed to read {}", p.display()))?;
-    serde_json::from_str(&content).with_context(|| format!("Failed to parse {}", p.display()))
+    Ok(OrbitIndex::default())
 }
 
 pub fn save(root: &Path, idx: &OrbitIndex) -> Result<()> {
-    let p = index_path(root);
-    if let Some(parent) = p.parent() {
+    let content = serde_json::to_string_pretty(idx).context("Failed to serialize index")?;
+
+    // Primary: home-level shared index
+    if let Some(home_path) = home_index_path() {
+        if let Some(parent) = home_path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create directory {}", parent.display()))?;
+        }
+        atomic_write(&home_path, &content)?;
+    }
+
+    // Legacy: root/.orbit/index.json (kept for compatibility/tests)
+    let legacy = index_path(root);
+    if let Some(parent) = legacy.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("Failed to create directory {}", parent.display()))?;
     }
-    let content = serde_json::to_string_pretty(idx).context("Failed to serialize index")?;
-    atomic_write(&p, &content)
+    atomic_write(&legacy, &content)
 }
 
 /// Write-then-rename for atomic file updates

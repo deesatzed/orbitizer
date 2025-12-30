@@ -11,7 +11,7 @@ use std::path::PathBuf;
 mod state;
 mod ui;
 
-pub fn run(root_str: &str) -> Result<()> {
+pub fn run(root_str: &str, dry_run: bool) -> Result<()> {
     let root = PathBuf::from(root_str);
 
     enable_raw_mode()?;
@@ -19,7 +19,7 @@ pub fn run(root_str: &str) -> Result<()> {
     let backend = CrosstermBackend::new(stdout());
     let mut terminal = Terminal::new(backend)?;
 
-    let mut st = state::State::new(root)?;
+    let mut st = state::State::new(root, dry_run)?;
 
     loop {
         terminal.draw(|f| ui::draw(f, &mut st))?;
@@ -41,7 +41,10 @@ pub fn run(root_str: &str) -> Result<()> {
                 }
 
                 match k.code {
-                    KeyCode::Char('q') => break,
+                    KeyCode::Char('q') => {
+                        let _ = st.save_session();
+                        break;
+                    }
                     KeyCode::Tab => st.next_panel(),
                     KeyCode::BackTab => st.prev_panel(),
                     KeyCode::Up => st.up(),

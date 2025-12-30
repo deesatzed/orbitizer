@@ -4,12 +4,13 @@ use std::fs;
 use std::path::Path;
 
 use crate::export::md::render_md;
-use crate::index::{focus::load_focus, store};
+use crate::index::{focus::load_focus, store, whitelist};
 
-pub fn snapshot_pinned(root_str: &str, label: Option<&str>) -> Result<()> {
+pub fn snapshot_pinned(root_str: &str, label: Option<&str>, dry_run: bool) -> Result<()> {
     let root = Path::new(root_str);
     let focus = load_focus(root).unwrap_or_default();
     let idx = store::load(root).unwrap_or_default();
+    let wl = whitelist::load_whitelist(root).unwrap_or_default();
 
     let ts = Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
     let lab = label.unwrap_or("snapshot");
@@ -17,6 +18,16 @@ pub fn snapshot_pinned(root_str: &str, label: Option<&str>) -> Result<()> {
         .join(".orbit")
         .join("snapshots")
         .join(format!("{}_{}", ts, sanitize(lab)));
+
+    if dry_run {
+        println!("[dry-run] would create snapshot at {}", snap_dir.display());
+        println!("  focus -> {}/focus.json", snap_dir.display());
+        println!("  index -> {}/index.json", snap_dir.display());
+        println!("  artifacts dir -> {}/artifacts/", snap_dir.display());
+        println!("  summary -> {}/summary.md", snap_dir.display());
+        return Ok(());
+    }
+
     fs::create_dir_all(&snap_dir)
         .with_context(|| format!("Failed to create snapshot directory {}", snap_dir.display()))?;
 
@@ -43,6 +54,13 @@ pub fn snapshot_pinned(root_str: &str, label: Option<&str>) -> Result<()> {
     })?;
     for p in focus.pinned.iter() {
         let pr = root.join(p);
+        if whitelist::is_protected(&pr, &wl) {
+            println!(
+                "[whitelist] skipping pinned project (protected): {}",
+                pr.display()
+            );
+            continue;
+        }
         if pr.is_dir() {
             copy_md_artifacts(&pr, &artifacts_dir, p)?;
         }

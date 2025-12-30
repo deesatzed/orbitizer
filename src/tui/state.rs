@@ -2,8 +2,10 @@ use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use crate::index::{focus, store};
+use crate::feature;
+use crate::index::{focus, session, store};
 use crate::model::project::{sync_pinned_flags, ProjectEntry, ProjectKind};
+use crate::scan::progress::Progress;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum Checkbox {
@@ -22,7 +24,9 @@ pub enum Panel {
 
 pub struct State {
     pub root: PathBuf,
+    pub dry_run: bool,
     pub panel: Panel,
+    pub high_contrast: bool,
 
     pub checkboxes: Vec<Checkbox>,
     pub checked: HashSet<Checkbox>,
@@ -40,6 +44,9 @@ pub struct State {
     pub search_buf: String,
     pub search_query: String,
 
+    // progress (for census)
+    pub progress_log: Vec<String>,
+
     // cached duplicate groups (invalidated on index change)
     cached_dupe_groups: Option<Vec<(String, Vec<ProjectEntry>)>>,
     // cached filtered projects (invalidated on index/filter/search change)
@@ -47,7 +54,7 @@ pub struct State {
 }
 
 impl State {
-    pub fn new(root: PathBuf) -> Result<Self> {
+    pub fn new(root: PathBuf, dry_run: bool) -> Result<Self> {
         let index = store::load(&root).unwrap_or_default();
         let focus = focus::load_focus(&root).unwrap_or_default();
 
@@ -56,9 +63,11 @@ impl State {
         checked.insert(Checkbox::Focus);
         checked.insert(Checkbox::Artifacts);
 
-        Ok(Self {
+        let mut state = Self {
             root,
+            dry_run,
             panel: Panel::Home,
+            high_contrast: false,
             checkboxes: vec![
                 Checkbox::Active,
                 Checkbox::Focus,
@@ -75,9 +84,40 @@ impl State {
             search_mode: false,
             search_buf: String::new(),
             search_query: String::new(),
+            progress_log: Vec::new(),
             cached_dupe_groups: None,
             cached_filtered_projects: None,
-        })
+        };
+
+        // Apply session if present
+        if let Ok(Some(sess)) = session::load_session(&state.root) {
+            if let Some(l) = sess.lens.as_deref() {
+                state.panel = match l {
+                    "projects" => Panel::Projects,
+                    "duplicates" => Panel::Duplicates,
+                    _ => Panel::Home,
+                };
+            }
+            if let Some(s) = sess.search {
+                state.search_query = s.clone();
+            }
+            if let Some(sel) = sess.selection {
+                // try to restore selection by path match in projects panel
+                let projects = state.compute_filtered_projects();
+                if let Some((idx, _)) = projects
+                    .iter()
+                    .enumerate()
+                    .find(|(_, p)| p.path == sel || p.path.ends_with(&sel))
+                {
+                    state.selected_project = idx;
+                }
+            }
+            if let Some(hc) = sess.high_contrast {
+                state.high_contrast = hc;
+            }
+        }
+
+        Ok(state)
     }
 
     pub fn next_panel(&mut self) {
@@ -166,7 +206,15 @@ impl State {
 
     pub fn primary_action(&mut self) -> Result<()> {
         // Home ENTER: refresh census
-        crate::scan::census::run_census(self.root.to_string_lossy().as_ref(), 4, None, false)?;
+        let progress = Progress::new(feature::flags().progress);
+        crate::scan::census::run_census(
+            self.root.to_string_lossy().as_ref(),
+            4,
+            None,
+            false,
+            Some(progress.clone()),
+        )?;
+        self.progress_log = progress.drain();
         self.index = store::load(&self.root)?;
         self.focus = focus::load_focus(&self.root)?;
         // re-sync pinned flags from focus (single source of truth)
@@ -202,10 +250,36 @@ impl State {
     pub fn apply_search(&mut self) {
         self.search_mode = false;
         self.search_query = self.search_buf.clone();
-        self.search_buf.clear();
-        self.selected_project = 0;
         self.invalidate_filter_cache();
     }
+
+    pub fn save_session(&self) -> Result<()> {
+        let lens = match self.panel {
+            Panel::Home => "home",
+            Panel::Projects => "projects",
+            Panel::Duplicates => "duplicates",
+        };
+        let selection = if let Panel::Projects = self.panel {
+            let projects = self.compute_filtered_projects();
+            projects.get(self.selected_project).map(|p| p.path.clone())
+        } else {
+            None
+        };
+        let sess = session::OrbitSession {
+            version: 1,
+            root: self.root.to_string_lossy().to_string(),
+            lens: Some(lens.to_string()),
+            search: if self.search_query.is_empty() {
+                None
+            } else {
+                Some(self.search_query.clone())
+            },
+            selection,
+            high_contrast: Some(self.high_contrast),
+        };
+        session::save_session(&sess)
+    }
+
     pub fn push_search(&mut self, c: char) {
         // keep it simple; later add cursor position
         if self.search_buf.len() < 120 {
@@ -247,11 +321,17 @@ impl State {
     }
 
     pub fn snapshot(&mut self) -> Result<()> {
-        crate::snapshot::quick::snapshot_pinned(self.root.to_string_lossy().as_ref(), Some("tui"))?;
+        let dry_run = self.dry_run || feature::flags().dry_run;
+        crate::snapshot::quick::snapshot_pinned(
+            self.root.to_string_lossy().as_ref(),
+            Some("tui"),
+            dry_run,
+        )?;
         Ok(())
     }
     pub fn export(&mut self) -> Result<()> {
-        crate::export::all::export_all(self.root.to_string_lossy().as_ref())?;
+        let dry_run = self.dry_run || feature::flags().dry_run;
+        crate::export::all::export_all(self.root.to_string_lossy().as_ref(), dry_run)?;
         Ok(())
     }
 

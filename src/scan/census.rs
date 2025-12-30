@@ -16,9 +16,10 @@ const SKIP_DIRS: &[&str] = &[
     "vendor",
 ];
 
+use crate::feature;
 use crate::index::{focus::load_focus, store};
 use crate::model::project::{sync_pinned_flags, ProjectEntry, ProjectKind};
-use crate::scan::{artifacts, discover, fingerprint};
+use crate::scan::{artifacts, discover, fingerprint, progress::Progress};
 
 type ProjectSummary = (Option<DateTime<Local>>, u64, u32, (bool, bool, bool, bool));
 
@@ -28,20 +29,30 @@ pub fn run_census(
     depth: usize,
     since: Option<&str>,
     json_output: bool,
+    progress: Option<Progress>,
 ) -> Result<()> {
+    let flags = feature::flags();
+    let progress = progress.unwrap_or_else(|| Progress::new(flags.progress));
+
     let root = Path::new(root_str);
     let focus = load_focus(root).unwrap_or_default();
     let cutoff = parse_cutoff(since)?;
 
     // Pipeline stages
+    progress.note("discovering projects");
     let discovered = discover::discover_projects(root, depth)?;
+    progress.note(&format!("discovered {} projects", discovered.len()));
+
+    progress.note("summarizing projects");
     let mut projects = build_project_entries(root, &discovered, cutoff)?;
 
     // Post-processing
+    progress.note("synchronizing pins and detecting duplicates");
     sync_pinned_flags(&mut projects, &focus.pinned);
     mark_duplicates_by_fingerprint(&mut projects);
 
     // Persist and output
+    progress.note("saving index");
     let idx = save_index(root, root_str, projects)?;
     output_result(root, &idx, json_output);
 

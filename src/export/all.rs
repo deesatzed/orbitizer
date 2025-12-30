@@ -4,10 +4,19 @@ use std::path::Path;
 
 use crate::index::store;
 
-pub fn export_all(root_str: &str) -> Result<()> {
+pub fn export_all(root_str: &str, dry_run: bool) -> Result<()> {
     let root = Path::new(root_str);
     let idx = store::load(root)?;
     let out = root.join(".orbit").join("exports");
+
+    if dry_run {
+        println!("[dry-run] would export to {}", out.display());
+        println!("  - summary.md");
+        println!("  - index.json");
+        println!("  - index.csv");
+        return Ok(());
+    }
+
     fs::create_dir_all(&out)
         .with_context(|| format!("Failed to create exports directory {}", out.display()))?;
 

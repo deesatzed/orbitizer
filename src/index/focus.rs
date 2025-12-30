@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -10,28 +11,50 @@ pub struct Focus {
     pub pinned: Vec<String>,
 }
 
-fn focus_path(root: &Path) -> PathBuf {
-    root.join(".orbit").join("focus.json")
+fn home_focus_path() -> Option<PathBuf> {
+    env::var("HOME").ok().map(|h| PathBuf::from(h).join(".orbit").join("focus.json"))
 }
 
 pub fn load_focus(root: &Path) -> Result<Focus> {
-    let p = focus_path(root);
-    if !p.exists() {
-        return Ok(Focus::default());
+    let candidates: Vec<PathBuf> = home_focus_path()
+        .into_iter()
+        .chain(std::iter::once(root.join(".orbit").join("focus.json")))
+        .collect();
+
+    for p in candidates {
+        if !p.exists() {
+            continue;
+        }
+        let content =
+            fs::read_to_string(&p).with_context(|| format!("Failed to read {}", p.display()))?;
+        if let Ok(parsed) =
+            serde_json::from_str::<Focus>(&content).with_context(|| format!("Failed to parse {}", p.display()))
+        {
+            return Ok(parsed);
+        }
     }
-    let content =
-        fs::read_to_string(&p).with_context(|| format!("Failed to read {}", p.display()))?;
-    serde_json::from_str(&content).with_context(|| format!("Failed to parse {}", p.display()))
+    Ok(Focus::default())
 }
 
 pub fn save_focus(root: &Path, f: &Focus) -> Result<()> {
-    let p = focus_path(root);
-    if let Some(parent) = p.parent() {
+    let content = serde_json::to_string_pretty(f).context("Failed to serialize focus")?;
+
+    // Primary: home-level shared file
+    if let Some(home_path) = home_focus_path() {
+        if let Some(parent) = home_path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create directory {}", parent.display()))?;
+        }
+        atomic_write(&home_path, &content)?;
+    }
+
+    // Legacy: project-root .orbit/focus.json (best-effort)
+    let legacy = root.join(".orbit").join("focus.json");
+    if let Some(parent) = legacy.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("Failed to create directory {}", parent.display()))?;
     }
-    let content = serde_json::to_string_pretty(f).context("Failed to serialize focus")?;
-    atomic_write(&p, &content)
+    atomic_write(&legacy, &content)
 }
 
 pub fn handle_focus(

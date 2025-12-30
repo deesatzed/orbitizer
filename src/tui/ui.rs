@@ -11,11 +11,32 @@ fn cb_label(cb: Checkbox) -> &'static str {
     }
 }
 
+fn draw_status(f: &mut Frame, st: &mut State, area: Rect) {
+    let mut status = Vec::new();
+    if let Some(last) = st.progress_log.last() {
+        status.push(format!("Progress: {}", last));
+    } else {
+        status.push("Progress: idle".into());
+    }
+    status.push(format!("Dry-run: {}", if st.dry_run { "on" } else { "off" }));
+
+    let b = Block::default().borders(Borders::ALL);
+    let p = Paragraph::new(status.join("   ")).block(b);
+    f.render_widget(p, area);
+}
+
 pub fn draw(f: &mut Frame, st: &mut State) {
     let area = f.size();
     let layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(9), Constraint::Min(0)].as_ref())
+        .constraints(
+            [
+                Constraint::Length(9), // header
+                Constraint::Min(0),    // main
+                Constraint::Length(2), // footer/status
+            ]
+            .as_ref(),
+        )
         .split(area);
 
     let header = Block::default()
@@ -42,6 +63,15 @@ pub fn draw(f: &mut Frame, st: &mut State) {
             st.search_query.clone()
         }
     ));
+    if st.dry_run {
+        lines.push("Mode: DRY-RUN (no writes)".into());
+    }
+    if !st.progress_log.is_empty() {
+        lines.push("Recent progress:".into());
+        for line in st.progress_log.iter().rev().take(3).rev() {
+            lines.push(format!(" • {line}"));
+        }
+    }
     lines.push("".into());
     for (i, cb) in st.checkboxes.iter().enumerate() {
         let mark = if st.checked.contains(cb) { "x" } else { " " };
@@ -60,12 +90,25 @@ pub fn draw(f: &mut Frame, st: &mut State) {
         Panel::Projects => draw_projects(f, st, layout[1]),
         Panel::Duplicates => draw_dupes(f, st, layout[1]),
     }
+
+    draw_status(f, st, layout[2]);
 }
 
-fn draw_home(f: &mut Frame, _st: &mut State, area: Rect) {
+fn draw_home(f: &mut Frame, st: &mut State, area: Rect) {
+    let mut text = String::from(
+        "ENTER: run Census (depth=4) and refresh index.\nTAB: Projects and Duplicates panels.\n\nTip: Pin your current work with `f` (Projects panel).\n",
+    );
+    if st.dry_run {
+        text.push_str("\nDRY-RUN is ON (no writes).\n");
+    }
+    if !st.progress_log.is_empty() {
+        text.push_str("\nRecent progress:\n");
+        for line in st.progress_log.iter().rev().take(5).rev() {
+            text.push_str(&format!(" - {line}\n"));
+        }
+    }
     let b = Block::default().title("Home").borders(Borders::ALL);
-    let p = Paragraph::new("ENTER: run Census (depth=4) and refresh index.\nTAB: Projects and Duplicates panels.\n\nTip: Pin your current work with `f` (Projects panel).")
-        .block(b);
+    let p = Paragraph::new(text).block(b);
     f.render_widget(p, area);
 }
 
